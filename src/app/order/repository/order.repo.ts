@@ -126,6 +126,20 @@ export async function findOrderByPublicId(publicId: string, conn: Knex): Promise
 }
 
 /**
+ * Same lookup as findOrderByPublicId but takes a row lock (`FOR UPDATE`).
+ * Must be called with a trx — the lock is held until commit/rollback, so
+ * concurrent status transitions on the same order serialize on it.
+ */
+export async function findOrderByPublicIdForUpdate(publicId: string, conn: Knex): Promise<OrderEntity | undefined> {
+    const row = await conn("orders")
+        .select(ORDER_COLUMNS as unknown as string[])
+        .where({public_id: publicId})
+        .forUpdate()
+        .first();
+    return row ? toEntity(row) : undefined;
+}
+
+/**
  * Returns the oldest READY orders that don't yet have a delivery agent.
  * Backed by `idx_orders_status_created_at` (partial WHERE status IN ('ready','assigned')).
  */

@@ -4,8 +4,10 @@ import {container} from "../../../lib/di/container";
 import {TOKENS} from "../../../lib/di/tokens";
 import {db} from "../../../lib/knex/knex";
 import {getBranch, getBranchesByIds} from "../../../lib/core-client/branch.client";
-import {OrderStatus} from "../../order/enums";
-import {findOrderByPublicId, findAgentTasks, updateOrderStatus} from "../../order/repository/order.repo";
+import {OrderStatus, StatusActor} from "../../order/enums";
+import {findOrderByPublicIdForUpdate, findAgentTasks, updateOrderStatus} from "../../order/repository/order.repo";
+import {assertTransition} from "../../order/service/order-status.service";
+import {OrderNotFoundError} from "../../order/errors";
 import {OrderStatusResponseDTO} from "../../order/dto/order.response.dto";
 import {AssignmentService} from "../../assignment/service/assignment.service";
 import {SettlementService} from "./settlement.service";
@@ -42,20 +44,17 @@ export class AgentService {
             return DeliveryTaskResponseDTO.from(updated, branch ?? undefined);
         }
 
-        if (target !== OrderStatus.PICKED) {
-            throw new Error(`agent cannot transition to ${target}`);
-        }
-
+        // Any other target is rejected by the status machine (409).
         const conn = db(region);
-        const order = await findOrderByPublicId(publicId, conn);
-        if (!order) throw new Error("OrderNotFound");
-        if (order.deliveryAgentId !== agentId) throw NotYourTaskError;
-        if (order.status !== OrderStatus.ASSIGNED) throw new Error("OrderNotInAssignedState");
-
         const trx = await conn.transaction();
         let updated;
         try {
-            updated = await updateOrderStatus(publicId, OrderStatus.PICKED, "picked_at", trx);
+            const order = await findOrderByPublicIdForUpdate(publicId, trx);
+            if (!order) throw OrderNotFoundError;
+            if (order.deliveryAgentId !== agentId) throw NotYourTaskError;
+            const {stamp} = assertTransition(order.status, target, {actor: StatusActor.AGENT});
+
+            updated = await updateOrderStatus(publicId, target, stamp, trx);
             await trx.commit();
         } catch (err) {
             await trx.rollback();

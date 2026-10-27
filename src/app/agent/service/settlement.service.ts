@@ -8,8 +8,15 @@ import {logger} from "../../../lib/logger/logger";
 import {ICacheProvider} from "../../../pkg/cache/cache.interface";
 import {getBranch} from "../../../lib/core-client/branch.client";
 import {OrderEntity} from "../../order/entity/order.entity";
-import {OrderStatus, PaymentMethod} from "../../order/enums";
-import {findOrderByPublicId, updateOrderStatus, updateOrderCommission} from "../../order/repository/order.repo";
+import {OrderStatus, PaymentMethod, StatusActor} from "../../order/enums";
+import {
+    findOrderByPublicId,
+    findOrderByPublicIdForUpdate,
+    updateOrderStatus,
+    updateOrderCommission,
+} from "../../order/repository/order.repo";
+import {assertTransition} from "../../order/service/order-status.service";
+import {OrderNotFoundError} from "../../order/errors";
 import {OrderStatusResponseDTO} from "../../order/dto/order.response.dto";
 import {createTransactionIdempotent} from "../../payment/repository/transaction.repo";
 import {TransactionType, TransactionMethod, TransactionStatus} from "../../payment/enums";
@@ -49,9 +56,12 @@ export class SettlementService {
 
         // Pre-trx fetch (read-only) so we can pull commissionBps from core's cache
         // without holding row locks across an HTTP call.
+        // Fail fast here so an illegal transition never costs a core round-trip;
+        // the authoritative check is repeated under the row lock inside the trx.
         const order = await findOrderByPublicId(publicId, conn);
-        if (!order) throw new Error("OrderNotFound");
+        if (!order) throw OrderNotFoundError;
         if (order.deliveryAgentId !== agentId) throw NotYourTaskError;
+        assertTransition(order.status, OrderStatus.DELIVERED, {actor: StatusActor.AGENT});
 
         // Branch fetch is cached in core's read-through; failure => commission stays 0.
         let commissionBps = 0;
@@ -67,6 +77,14 @@ export class SettlementService {
         const trx = await conn.transaction();
         let updated: OrderEntity;
         try {
+            // Lock the order row and re-assert picked → delivered. A concurrent
+            // or retried `delivered` call blocks here, then sees `delivered`
+            // and fails the transition — so the balance is credited exactly once.
+            const locked = await findOrderByPublicIdForUpdate(publicId, trx);
+            if (!locked) throw OrderNotFoundError;
+            if (locked.deliveryAgentId !== agentId) throw NotYourTaskError;
+            const {stamp} = assertTransition(locked.status, OrderStatus.DELIVERED, {actor: StatusActor.AGENT});
+
             // Stamp commission FIRST so subsequent writes see the right number.
             await updateOrderCommission(publicId, commission, trx);
 
@@ -168,7 +186,7 @@ export class SettlementService {
             }, trx);
 
             // Finally flip status to delivered.
-            updated = await updateOrderStatus(publicId, OrderStatus.DELIVERED, "delivered_at", trx);
+            updated = await updateOrderStatus(publicId, OrderStatus.DELIVERED, stamp, trx);
 
             // Transactional outbox — order.delivered for analytics + future consumers.
             // Same trx so a publish never escapes a rolled-back settlement.
