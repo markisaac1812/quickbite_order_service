@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+.claude/
+
+# local experimentation scripts — not tracked
+play/
