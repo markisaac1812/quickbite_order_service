@@ -3,13 +3,15 @@ import {injectable, inject} from "tsyringe";
 import {Server as IoServer} from "socket.io";
 import {container} from "../../../lib/di/container";
 import {TOKENS} from "../../../lib/di/tokens";
-import {db} from "../../../lib/knex/knex";
+import {Knex} from "knex";
+import {db, dbArchive, dbFor, archivedPortionOf} from "../../../lib/knex/knex";
+import {ClusterSlice} from "../../../lib/knex/types";
 import {assertRegion} from "../../../lib/sharding/regions";
 import {ICacheProvider} from "../../../pkg/cache/cache.interface";
 import {logger} from "../../../lib/logger/logger";
 import {UnAuthorisedError} from "../../../lib/auth/errors";
 import {sumMinor, multiplyMinor} from "../../../pkg/utils/money";
-import {PaginationParams, FilterParams} from "../../../lib/http/pagination/cursor-pagination";
+import {PaginationParams, FilterParams, PaginationMeta, encodeCursor} from "../../../lib/http/pagination/cursor-pagination";
 import {
     getBranch,
     getBranchProducts,
@@ -24,7 +26,7 @@ import {assertTransition} from "./order-status.service";
 import {OrderEntity} from "../entity/order.entity";
 import {OrderItemEntity} from "../entity/order-item.entity";
 import {OrderStatus, PaymentMethod, Currency, StatusActor} from "../enums";
-import {ActorContext, OrderLineDraft, UnavailableItem} from "../types";
+import {ActorContext, OrderLineDraft, OrderSliceFetcher, UnavailableItem} from "../types";
 import {
     OrderNotFoundError,
     BranchNotAcceptingOrdersError,
@@ -223,26 +225,35 @@ export class OrderService {
     }
 
     async getOrder(actor: ActorContext, region: string, publicId: string): Promise<OrderDetailResponseDTO> {
-        const conn = db(region);
-        const order = await findOrderByPublicId(publicId, conn);
+        let conn = db(region);
+        let order = await findOrderByPublicId(publicId, conn);
+
+        // Archived (prior-year) orders: admins and restaurant owners only, so
+        // the customer order-tracking path never pays for an archive round-trip.
+        if (!order && this.canReadArchive(actor)) {
+            conn = dbArchive(region);
+            order = await findOrderByPublicId(publicId, conn);
+        }
         if (!order) throw OrderNotFoundError;
 
         this.assertReadAccess(actor, order);
 
+        // Items live in the same cluster as their order (they're archived together).
         const items = await findItemsByOrderIds([order.id], conn);
         return OrderDetailResponseDTO.from(order, items);
     }
 
     async listCustomerOrders(actor: ActorContext, region: string, year: number, pagination: PaginationParams) {
+        // Current year → hot only. Prior year → archive + hot (not-yet-archived rows).
         const yearStart = new Date(Date.UTC(year, 0, 1));
         const yearEnd = new Date(Date.UTC(year + 1, 0, 1));
-        const conn = db(region);
-        const result = await findOrdersByCustomer({customerId: actor.userId, yearStart, yearEnd}, pagination, conn);
-        const counts = await countItemsByOrderIds(result.data.map((o) => o.id), conn);
-        return {
-            data: result.data.map((o) => OrderSummaryResponseDTO.from(o, counts.get(o.id) ?? 0)),
-            meta: result.meta,
-        };
+        return this.listAcrossClusters(region, yearStart, yearEnd, pagination, (conn, slice, page) =>
+            findOrdersByCustomer(
+                {customerId: actor.userId, yearStart: slice.from ?? yearStart, yearEnd: slice.to ?? yearEnd},
+                page,
+                conn,
+            ),
+        );
     }
 
     async listRestaurantOrders(
@@ -256,18 +267,14 @@ export class OrderService {
         filters: FilterParams[],
         pagination: PaginationParams,
     ) {
-        const conn = db(region);
-        const result = await findOrdersByRestaurantBranch(
-            {restaurantId, branchId, status, from, to},
-            pagination,
-            filters,
-            conn,
+        return this.listAcrossClusters(region, from, to, pagination, (conn, slice, page) =>
+            findOrdersByRestaurantBranch(
+                {restaurantId, branchId, status, from: slice.from, to: slice.to},
+                page,
+                filters,
+                conn,
+            ),
         );
-        const counts = await countItemsByOrderIds(result.data.map((o) => o.id), conn);
-        return {
-            data: result.data.map((o) => OrderSummaryResponseDTO.from(o, counts.get(o.id) ?? 0)),
-            meta: result.meta,
-        };
     }
 
     async updateStatus(actor: ActorContext, region: string, publicId: string, body: UpdateOrderStatusRequestDTO): Promise<OrderStatusResponseDTO> {
@@ -317,6 +324,93 @@ export class OrderService {
     }
 
     // ── private helpers ──────────────────────────────────────────────────
+
+    /**
+     * Pages a created_at-sorted order list across the hot and archive clusters.
+     *
+     * Hot is always read over the full range (it may still hold prior-year
+     * rows the archival worker hasn't moved yet). The archive is read only for
+     * the part of the range before the cutoff, so a current-year read stays a
+     * single hot query. With two sources, each returns its top `limit`; the
+     * global page is the top `limit` of their merge — standard 2-way merge, so
+     * the cursor stays a plain created_at. Duplicates (a batch caught between
+     * the archive and hot commits) are dropped by order id.
+     *
+     * At most 2 list queries + 2 batched item-count queries, run per cluster in
+     * parallel. No N+1.
+     */
+    private async listAcrossClusters(
+        region: string,
+        from: Date | undefined,
+        to: Date | undefined,
+        pagination: PaginationParams,
+        fetchSlice: OrderSliceFetcher,
+    ): Promise<{data: OrderSummaryResponseDTO[]; meta: PaginationMeta}> {
+        const sources: ClusterSlice[] = [{cluster: "hot", from, to}];
+        const archived = archivedPortionOf(from, to);
+        const cursor = pagination.cursor ? new Date(pagination.cursor) : undefined;
+        if (archived && !(cursor && this.isSliceBeforeCursor(archived, cursor, pagination.sortOrder))) {
+            sources.push(archived);
+        }
+
+        const pages = await Promise.all(
+            sources.map(async (slice) => {
+                const conn = dbFor(region, slice.cluster);
+                return {conn, page: await fetchSlice(conn, slice, pagination)};
+            }),
+        );
+
+        const seen = new Set<number>();
+        const merged: {order: OrderEntity; conn: Knex}[] = [];
+        for (const {conn, page} of pages) {
+            for (const order of page.data) {
+                if (seen.has(order.id)) continue;
+                seen.add(order.id);
+                merged.push({order, conn});
+            }
+        }
+        if (pages.length > 1) {
+            const dir = pagination.sortOrder === "asc" ? 1 : -1;
+            merged.sort((a, b) => dir * (a.order.createdAt.getTime() - b.order.createdAt.getTime()));
+        }
+
+        const taken = merged.slice(0, pagination.limit);
+        const hasMore = merged.length > pagination.limit || pages.some((p) => p.page.meta.hasMore);
+
+        // Items live in the same cluster as their order → one count query per cluster.
+        const idsByConn = new Map<Knex, number[]>();
+        for (const {order, conn} of taken) {
+            const ids = idsByConn.get(conn) ?? [];
+            ids.push(order.id);
+            idsByConn.set(conn, ids);
+        }
+        const countMaps = await Promise.all([...idsByConn].map(([conn, ids]) => countItemsByOrderIds(ids, conn)));
+        const counts = new Map<number, number>();
+        for (const m of countMaps) for (const [id, n] of m) counts.set(id, n);
+
+        const last = taken[taken.length - 1]?.order;
+        return {
+            data: taken.map(({order}) => OrderSummaryResponseDTO.from(order, counts.get(order.id) ?? 0)),
+            meta: {
+                nextCursor: hasMore && last ? encodeCursor(last.createdAt) : null,
+                hasMore,
+                count: taken.length,
+            },
+        };
+    }
+
+    /** True if every row in the slice sorts at/before the cursor (already served) — skip the query. */
+    private isSliceBeforeCursor(slice: ClusterSlice, cursor: Date, sortOrder: "asc" | "desc"): boolean {
+        if (Number.isNaN(cursor.getTime())) return false;
+        return sortOrder === "desc"
+            ? !!slice.from && cursor <= slice.from
+            : !!slice.to && cursor >= slice.to;
+    }
+
+    private canReadArchive(actor: ActorContext): boolean {
+        return actor.role === "system_admin" || (actor.role === "restaurant_user" && actor.restaurantRole === "owner");
+    }
+
     private buildOrderLineDrafts(
         requested: Array<{productId: number; quantity: number}>,
         products: CoreBranchProduct[],

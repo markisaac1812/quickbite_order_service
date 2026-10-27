@@ -1,4 +1,8 @@
+import {Knex} from "knex";
 import {OrderStatus, PaymentMethod, Currency, StatusActor} from "./enums";
+import {OrderEntity} from "./entity/order.entity";
+import {ClusterSlice} from "../../lib/knex/types";
+import {PaginationParams} from "../../lib/http/pagination/cursor-pagination";
 
 // ── repo inputs ──────────────────────────────────────────────────────────
 export interface CreateOrderInput {
@@ -58,6 +62,16 @@ export interface ListResult<T> {
         count: number;
     };
 }
+
+/**
+ * Runs one list query against one cluster's slice of the requested time
+ * range. Used by OrderService to page across hot + archive.
+ */
+export type OrderSliceFetcher = (
+    conn: Knex,
+    slice: ClusterSlice,
+    pagination: PaginationParams,
+) => Promise<ListResult<OrderEntity>>;
 
 // ── service-level helpers ────────────────────────────────────────────────
 export interface ActorContext {

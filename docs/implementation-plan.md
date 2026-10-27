@@ -428,6 +428,17 @@ Every night, move rows whose `created_at` is in a **prior year** from the hot cl
 - Re-running the worker is a no-op (nothing left to move; logs say `moved=0`).
 - Killing the worker mid-batch and restarting it does not duplicate rows (archive inserts use `ON CONFLICT DO NOTHING`).
 
+### As built — deviations from the plan above (and why)
+
+- **Scheduling**: registered through the existing node-cron job registry (`registerArchivalJobs()` in `src/worker.ts`, one `archival:<region>` job, `ARCHIVAL_CRON` default `0 3 * * *` UTC) instead of a bare `setInterval`. The Redis lock `archival:<region>:lock` is kept for cross-process safety. One-off run: `npm run archive:run` (`REGION=eg` optional).
+- **Unit of work is a batch of orders, not rows per table**: each batch locks up to `ARCHIVAL_BATCH_SIZE` prior-year orders and moves them *with* their `order_items`, `transactions`, `payment_sessions`, `agent_earnings` (fetched via `whereIn(order_id)`). A per-table `created_at` cut would split an order from children booked later (e.g. `agent_earnings.earned_at` on Jan 1 for a Dec 31 order) and leave archived orders unreadable as a whole.
+- **Only terminal orders move** (`delivered`, `cancelled`, `rejected`). A prior-year order still in flight stays hot until it finishes, so its next transition never hits a missing row.
+- **`payment_webhook_events`** has no `order_id`; it is moved separately by `received_at` (new index `idx_payment_webhook_events_received_at`).
+- **Not archived**: order-less ledger rows (payouts) and `restaurant_balances` — finance keeps a continuous ledger on hot. `events_outbox` is out of scope.
+- **Copy safety**: column lists are read from `information_schema` (a column added later is never silently dropped), the run aborts if the archive is missing a column, and every copy is count-verified on the archive side before the hot delete.
+- **Read path**: hot is always read for the full requested range (it may still hold not-yet-archived prior-year rows: in-flight orders, the window right after New Year, a run that hit `ARCHIVAL_MAX_RUNTIME_MIN`); the archive is added only for the pre-cutoff part and the two are merged by `created_at`, deduped by id. Current-year reads remain a single hot query. List endpoints with no `from` stay hot-only. `GET /orders/:publicId` falls back to the archive for `system_admin` and restaurant `owner` only.
+- **Boundary**: `archiveCutoff()` in `lib/knex/knex.ts` (start of current UTC year) is shared by the worker and the read path.
+
 ---
 
 ## Build cadence summary
