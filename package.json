@@ -14,7 +14,8 @@
     "migrate:status": "knex --knexfile src/lib/knex/knexfile.ts migrate:status",
     "migrate:make": "knex --knexfile src/lib/knex/knexfile.ts migrate:make",
     "migrate:all": "tsx scripts/migrate-all.ts",
-    "partitions:create": "tsx scripts/create-partitions.ts"
+    "partitions:create": "tsx scripts/create-partitions.ts",
+    "archive:run": "tsx scripts/run-archival.ts"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

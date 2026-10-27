@@ -22,3 +22,39 @@ export interface ScheduledJob {
     /** The work. May be sync or async; throws are caught + logged by the scheduler. */
     handler: () => Promise<void> | void;
 }
+
+// ── Archival worker ─────────────────────────────────────────────────────
+
+/** Tables the archival worker moves hot → archive. */
+export type ArchivedTable =
+    | "orders"
+    | "order_items"
+    | "transactions"
+    | "payment_sessions"
+    | "agent_earnings"
+    | "payment_webhook_events";
+
+/** Child tables keyed by `order_id` that travel with their order. */
+export type OrderChildTable = Exclude<ArchivedTable, "orders" | "payment_webhook_events">;
+
+/** A raw row copied verbatim between clusters (snake_case columns). */
+export type ArchiveRow = Record<string, unknown>;
+
+/** Column metadata read from information_schema. */
+export interface TableColumn {
+    name: string;
+    /** json/jsonb columns are re-serialized on insert (pg returns them parsed). */
+    isJson: boolean;
+}
+
+export interface ArchivalRunStats {
+    region: string;
+    batches: number;
+    moved: Record<ArchivedTable, number>;
+    total: number;
+    /** true when ARCHIVAL_MAX_RUNTIME_MIN elapsed before the backlog was drained. */
+    stoppedEarly: boolean;
+    /** set when another process holds `archival:<region>:lock`. */
+    skipped?: "lock-held";
+    ms: number;
+}
