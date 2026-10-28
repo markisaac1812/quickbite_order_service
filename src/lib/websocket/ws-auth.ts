@@ -30,6 +30,9 @@ export function permittedChannels(user: JWTPayload): Set<string> {
     if (user.role === "delivery_agent") {
         allowed.add(`agent:${user.userId}`);
     }
+    if (user.role === "system_admin") {
+        allowed.add("admin:alerts");
+    }
     return allowed;
 }
 

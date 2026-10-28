@@ -79,6 +79,7 @@ export class AssignmentService {
         const attemptsRaw = await this.cache.get(AssignmentService.attemptsKey(order.publicId));
         const attempts = Number(attemptsRaw ?? 0);
         if (attempts >= env.delivery.maxAttempts) {
+            logger.warn("assignment.exhausted", {publicId: order.publicId, attempts});
             this.io.to("admin:alerts").emit("assignment.exhausted", {orderId: order.publicId, attempts});
             // extend to update the orders table to alert the restaurat that the order cant be assigned or rely on created_At stamp
             return "exhausted";

@@ -5,6 +5,7 @@ export const BranchNotAcceptingOrdersError = new AppError("BranchNotAcceptingOrd
 export const CancellationWindowExpiredError = new AppError("CancellationWindowExpired", 409);
 export const ReasonRequiredError = new AppError("Reason required for this transition", 400);
 export const OnlinePaymentNotAvailableError = new AppError("OnlinePaymentNotAvailableInRegion", 409);
+export const RegionMismatchError = new AppError("RegionMismatch: branch belongs to a different region", 400);
 
 export function invalidStatusTransitionError(from: string, to: string) {
     return new AppError(

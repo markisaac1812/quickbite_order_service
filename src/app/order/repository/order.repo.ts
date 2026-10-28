@@ -234,6 +234,32 @@ export async function updateOrderStatus(
     return toEntity(row);
 }
 
+/**
+ * Compare-and-set variant: only moves the order if it is still in `from`.
+ * Returns null when a concurrent transition already moved it, so two racing
+ * requests can't both pass the status machine (e.g. double stock release).
+ */
+export async function updateOrderStatusFrom(
+    publicId: string,
+    from: OrderStatus,
+    status: OrderStatus,
+    stampColumn: string | null,
+    conn: Knex,
+): Promise<OrderEntity | null> {
+    const update: Record<string, unknown> = {
+        status,
+        updated_at: conn.fn.now(),
+    };
+    if (stampColumn) {
+        update[stampColumn] = conn.fn.now();
+    }
+    const [row] = await conn("orders")
+        .where({public_id: publicId, status: from})
+        .update(update)
+        .returning(ORDER_COLUMNS as unknown as string[]);
+    return row ? toEntity(row) : null;
+}
+
 export async function findOrdersByCustomer(
     filter: ListCustomerOrdersFilter,
     pagination: PaginationParams,

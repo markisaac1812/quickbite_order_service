@@ -31,7 +31,9 @@ import {
     OrderNotFoundError,
     BranchNotAcceptingOrdersError,
     OnlinePaymentNotAvailableError,
+    RegionMismatchError,
     outOfStockError,
+    invalidStatusTransitionError,
 } from "../errors";
 import {env} from "../../../lib/config/env";
 import {
@@ -45,6 +47,7 @@ import {
     createOrder,
     findOrderByPublicId,
     updateOrderStatus,
+    updateOrderStatusFrom,
     findOrdersByCustomer,
     findOrdersByRestaurantBranch,
 } from "../repository/order.repo";
@@ -82,8 +85,12 @@ export class OrderService {
         if (branch.restaurantStatus !== "active") throw BranchNotAcceptingOrdersError;
         if (await this.coreData.isBranchRejectingOrders(body.branchId)) throw BranchNotAcceptingOrdersError;
 
-        // Branch country may arrive uppercase ("EG"); shard router is lowercase.
-        const resolvedRegion = assertRegion(region ?? branch.region);
+        // The branch owns the shard. Branch country may arrive uppercase ("EG");
+        // shard router is lowercase. A caller-supplied region that disagrees
+        // would write the order to the wrong shard (and skip that region's
+        // online-payment gate), so reject it instead of trusting it.
+        const resolvedRegion = assertRegion(branch.region);
+        if (region && region !== resolvedRegion) throw RegionMismatchError;
 
         // Online gateway is enabled per-region (env-driven). Anything else falls
         // back to COD-only — fail fast before we touch stock.
@@ -293,7 +300,9 @@ export class OrderService {
         const trx = await conn.transaction();
         let updated: OrderEntity;
         try {
-            updated = await updateOrderStatus(order.publicId, body.status, stamp, trx);
+            const moved = await updateOrderStatusFrom(order.publicId, order.status, body.status, stamp, trx);
+            if (!moved) throw invalidStatusTransitionError(order.status, body.status);
+            updated = moved;
 
             // Transactional outbox — pick the matching event type for the
             // new status. Same trx as the status update so we can't publish
@@ -312,6 +321,18 @@ export class OrderService {
         } catch (err) {
             await trx.rollback();
             throw err;
+        }
+
+        // Return reserved stock to core when the order dies before the kitchen
+        // started on it. Out-of-trx and after commit (same as placement): the
+        // status machine makes cancelled/rejected terminal, so this runs once.
+        if (RELEASES_STOCK_ON.has(body.status) && STOCK_RELEASABLE_FROM.has(order.status)) {
+            const items = await findItemsByOrderIds([order.id], conn);
+            await this.releaseStockSafe(
+                Number(order.branchId),
+                items.map((i) => ({productId: Number(i.productId), quantity: Number(i.quantity)})),
+                `release:${order.publicId}`,
+            );
         }
 
         await this.invalidateBranchOrdersCache(region, order.branchId);
@@ -455,7 +476,7 @@ export class OrderService {
         } catch (err) {
             // Log loudly but do not mask the original error; release-stock failure
             // is observability/alerting territory, not a customer-facing error.
-            logger.error("releaseStock failed after order placement rollback", {
+            logger.error("releaseStock failed (stock stays reserved in core)", {
                 branchId,
                 error: (err as Error).message,
             });
@@ -506,6 +527,16 @@ const OUTBOX_EVENT_FOR_STATUS: Partial<Record<OrderStatus, string>> = {
     [OrderStatus.REJECTED]: EVENT_TYPES.ORDER_REJECTED,
     [OrderStatus.CANCELLED]: EVENT_TYPES.ORDER_CANCELLED,
 };
+
+// Terminal "order died" statuses that hand reserved stock back to core —
+// but only if the kitchen hadn't started (from `preparing` on, the food is
+// already made and the stock is genuinely consumed).
+const RELEASES_STOCK_ON = new Set<OrderStatus>([OrderStatus.CANCELLED, OrderStatus.REJECTED]);
+const STOCK_RELEASABLE_FROM = new Set<OrderStatus>([
+    OrderStatus.PENDING_PAYMENT,
+    OrderStatus.PLACED,
+    OrderStatus.ACCEPTED,
+]);
 
 /** Matches analytics-service contract (docs/api-contracts.md — order.placed payload). */
 function buildOrderPlacedPayload(order: OrderEntity, items: OrderItemEntity[]) {
