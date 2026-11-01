@@ -25,6 +25,7 @@ const baseSchema = z.object({
     REDIS_HOST: z.string().default("localhost"),
     REDIS_PORT: z.string().default("6379"),
     REDIS_PASSWORD: z.string().default(""),
+    REDIS_DB: z.string().default("0"),                                   // logical DB index; tests use a dedicated one
 
     RABBITMQ_URL: z.string(),
     RABBITMQ_CORE_EVENTS_EXCHANGE: z.string().default("core.events"),
@@ -159,6 +160,7 @@ export const env = {
         host: parsed.REDIS_HOST,
         port: Number(parsed.REDIS_PORT),
         password: parsed.REDIS_PASSWORD || undefined,
+        db: Number(parsed.REDIS_DB),
     },
 
     rabbit: {

@@ -4,7 +4,10 @@ import {container} from "../../../lib/di/container";
 import {TOKENS} from "../../../lib/di/tokens";
 import {db} from "../../../lib/knex/knex";
 import {logger} from "../../../lib/logger/logger";
+import {invalidateCacheNamespace} from "../../../lib/cache/withCache";
+import {ICacheProvider} from "../../../pkg/cache/cache.interface";
 import {IPaymentProvider} from "../../../pkg/payments/payment.interface";
+import {OrderService} from "../../order/service/order.service";
 import {KashierWebhookEnvelope} from "../../../pkg/payments/kashier/types";
 import {OrderStatus} from "../../order/enums";
 import {findOrderByPublicId, updateOrderStatus} from "../../order/repository/order.repo";
@@ -32,7 +35,10 @@ const KASHIER_PROVIDER_ID = PAYMENT_PROVIDER_IDS[PaymentProviderName.KASHIER];
 
 @injectable()
 export class KashierWebhookService {
-    constructor(@inject(TOKENS.KashierProvider) private readonly kashier: IPaymentProvider) {}
+    constructor(
+        @inject(TOKENS.KashierProvider) private readonly kashier: IPaymentProvider,
+        @inject(TOKENS.CacheProvider) private readonly cache: ICacheProvider,
+    ) {}
 
     private get io(): IoServer {
         return container.resolve<IoServer>(TOKENS.WsServer);
@@ -189,6 +195,9 @@ export class KashierWebhookService {
                     });
 
                     await trx.commit();
+                    // The order only now enters the restaurant's list — drop its cached variants.
+                    await invalidateCacheNamespace(this.cache, region, OrderService.branchOrdersCacheNamespace(placed.branchId))
+                        .catch((err) => logger.warn("branch orders cache invalidation failed", {region, branchId: placed.branchId, error: (err as Error).message}));
                     // WS announcements after commit so we never publish a state we then roll back.
                     this.io.to(`branch:${placed.branchId}`).emit("order.created", OrderSummaryResponseDTO.from(placed, items.length));
                     this.io.to(`customer:${placed.customerId}`).emit("order.status_changed", OrderStatusResponseDTO.from(placed));

@@ -7,6 +7,7 @@ import {requireRegion} from "../../lib/sharding/region-resolver";
 import {container} from "../../lib/di/container";
 import {TOKENS} from "../../lib/di/tokens";
 import {OrderController} from "./controller/order.controller";
+import {OrderService} from "./service/order.service";
 
 export const orderRouter = Router();
 
@@ -52,7 +53,9 @@ orderRouter.get(
     requireRestaurantMember("restaurantId"),
     requireBranchAccess("branchId"),
     rbac({resource: "orders", action: "read"}),
-    withCache(10),
+    // 10s TTL. Order writes that change the branch's list bump this namespace,
+    // which drops every cached filter/cursor variant at once.
+    withCache(10, false, {namespace: (req) => OrderService.branchOrdersCacheNamespace(Number(req.params.branchId))}),
     orderController.listRestaurantOrders,
 );
 

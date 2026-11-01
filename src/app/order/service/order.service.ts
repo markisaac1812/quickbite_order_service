@@ -6,6 +6,7 @@ import {TOKENS} from "../../../lib/di/tokens";
 import {Knex} from "knex";
 import {db, dbArchive, dbFor, archivedPortionOf} from "../../../lib/knex/knex";
 import {ClusterSlice} from "../../../lib/knex/types";
+import {invalidateCacheNamespace} from "../../../lib/cache/withCache";
 import {assertRegion} from "../../../lib/sharding/regions";
 import {ICacheProvider} from "../../../pkg/cache/cache.interface";
 import {logger} from "../../../lib/logger/logger";
@@ -61,11 +62,16 @@ import {EVENT_TYPES} from "../../../lib/events/event-types";
 
 const SERVICE_FEE_MINOR = 1000; // 10.00 EGP / SAR — paid to the platform.
 
-const RESTAURANT_ORDERS_CACHE_PREFIX = (region: string, branchId: number) =>
-    `${region}:GET:/api/restaurant/orders?branchId=${branchId}`;
-
 @injectable()
 export class OrderService {
+    /**
+     * withCache namespace of the restaurant branch order list. The route and
+     * every invalidation build the key from this one helper so they can't drift.
+     */
+    static branchOrdersCacheNamespace(branchId: number): string {
+        return `branch-orders:${branchId}`;
+    }
+
     constructor(
         @inject(TOKENS.CacheProvider) private readonly cache: ICacheProvider,
         @inject(TOKENS.CoreDataCacheService) private readonly coreData: CoreDataCacheService,
@@ -511,10 +517,14 @@ export class OrderService {
         throw UnAuthorisedError;
     }
 
+    /** Drops every cached variant (status filter, cursor, limit) of the branch's order list. */
     private async invalidateBranchOrdersCache(region: string, branchId: number) {
         try {
-            await this.cache.del(RESTAURANT_ORDERS_CACHE_PREFIX(region, branchId));
-        } catch {}
+            await invalidateCacheNamespace(this.cache, region, OrderService.branchOrdersCacheNamespace(branchId));
+        } catch (err) {
+            // Never fail the write over the cache; the route's 10s TTL bounds staleness.
+            logger.warn("branch orders cache invalidation failed", {region, branchId, error: (err as Error).message});
+        }
     }
 }
 
