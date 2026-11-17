@@ -1,12 +1,6 @@
 import {OrderStatus, StatusActor} from "../enums";
 import {invalidStatusTransitionError, ReasonRequiredError, CancellationWindowExpiredError} from "../errors";
-import {AssertTransitionContext, AssertTransitionResult} from "../types";
-
-interface TransitionRule {
-    actors: StatusActor[];
-    stamp: string | null;
-    requiresReason?: boolean;
-}
+import {AssertTransitionContext, AssertTransitionResult, TransitionRule} from "../types";
 
 /**
  * Status machine. Each entry is `from -> to -> rule`. Anything not listed is

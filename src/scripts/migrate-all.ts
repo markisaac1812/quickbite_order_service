@@ -14,8 +14,7 @@ import "reflect-metadata";
 import {env} from "../lib/config/env";
 import {db, dbArchive, destroyAll} from "../lib/knex/knex";
 import {logger} from "../lib/logger/logger";
-
-type Cluster = "hot" | "archive";
+import {Cluster} from "../lib/knex/types";
 
 function clustersFromEnv(): Cluster[] {
     const raw = (process.env.CLUSTER ?? "all").toLowerCase();
