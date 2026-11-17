@@ -18,16 +18,7 @@ import {
     OrderAlreadyClaimedError,
     OrderNotInReadyStateError,
 } from "../../agent/errors";
-
-interface OfferPayload {
-    orderId: string;            // public_id
-    branch: {id: number; lat: number; lng: number; name: string; addressText: string};
-    dropoff: {lat: number; lng: number; addressText: string};
-    total: number;
-    currency: string;
-    paymentMethod: string;
-    expiresAt: string;
-}
+import {OfferPayload} from "../types";
 
 @injectable()
 export class AssignmentService {

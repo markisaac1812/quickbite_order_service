@@ -68,8 +68,9 @@ describe("PATCH order status (restaurant, customer and admin routes)", () => {
         expect(row.status).toBe("accepted");
         expect(row.accepted_at).toBeInstanceOf(Date);
 
-        const outbox = await db(REGION)("events_outbox").select("event_type", "aggregate_id");
-        expect(outbox).toEqual([{event_type: "order.accepted", aggregate_id: order.public_id}]);
+        const outbox = await db(REGION)("events_outbox").select("event_type", "aggregate_id", "payload");
+        expect(outbox).toEqual([{event_type: "order.accepted", aggregate_id: order.public_id, payload: expect.any(Object)}]);
+        expect(outbox[0].payload).toMatchObject({orderId: order.public_id, region: REGION, countryCode: "EG", status: "accepted"});
 
         // Assert — live update reached the customer's channel
         await expect(pushed).resolves.toEqual(res.body.data);

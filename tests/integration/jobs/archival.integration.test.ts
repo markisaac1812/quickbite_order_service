@@ -2,6 +2,7 @@ import "reflect-metadata";
 import {db, dbArchive} from "../../../src/lib/knex/knex";
 import {redisClient} from "../../../src/lib/cache/init";
 import {archiveRegion} from "../../../src/lib/jobs/archival.worker";
+import {env} from "../../../src/lib/config/env";
 import {startTestServer} from "../../helpers/server";
 import {
     insertAgentEarning,
@@ -19,17 +20,28 @@ const LAST_YEAR = new Date().getUTCFullYear() - 1;
 const lastYear = (month: number, day: number) => new Date(Date.UTC(LAST_YEAR, month, day, 12));
 
 /** A delivered prior-year order with every child table populated. */
-async function seedArchivableOrder() {
+async function seedArchivableOrder(sessionId = "ks_archived") {
     const order = await insertOrder(REGION, {status: "delivered", delivery_agent_id: AGENT.userId, created_at: lastYear(5, 1)});
     await insertOrderItem(REGION, order.id);
     await insertTransaction(REGION, {order_id: order.id});
-    await insertPaymentSession(REGION, order.id, {provider_session_id: "ks_archived", status: "captured"});
+    await insertPaymentSession(REGION, order.id, {provider_session_id: sessionId, status: "captured"});
     await insertAgentEarning(REGION, {agent_id: AGENT.userId, order_id: order.id});
     return order;
 }
 
 const count = async (conn: ReturnType<typeof db>, table: string) =>
     Number((await conn(table).count<{count: string}[]>("* as count"))[0].count);
+
+/** Runs `fn` with some archival knobs overridden, restoring them afterwards. */
+async function withArchivalConfig<T>(overrides: Partial<typeof env.archival>, fn: () => Promise<T>): Promise<T> {
+    const saved = {...env.archival};
+    Object.assign(env.archival, overrides);
+    try {
+        return await fn();
+    } finally {
+        Object.assign(env.archival, saved);
+    }
+}
 
 describe("cold archival worker (hot → archive cluster)", () => {
     let app: TestServer;
@@ -82,6 +94,36 @@ describe("cold archival worker (hot → archive cluster)", () => {
         expect(await archive("payment_webhook_events").pluck("provider_event_id")).toEqual(["TX-OLD"]);
 
         // Assert — the run released its lock
+        expect(await redisClient.exists(`archival:${REGION}:lock`)).toBe(0);
+    });
+
+    it("drains a backlog larger than one batch, and a second run finds nothing left", async () => {
+        // Arrange — 5 archivable orders, batches of 2 → 3 order batches + 1 empty probe
+        for (let i = 0; i < 5; i++) await seedArchivableOrder(`ks_archived_${i}`);
+
+        await withArchivalConfig({batchSize: 2}, async () => {
+            // Act
+            const first = await archiveRegion(REGION);
+            const second = await archiveRegion(REGION);
+
+            // Assert
+            expect(first).toMatchObject({batches: 3, moved: {orders: 5, order_items: 5, agent_earnings: 5}, total: 25, stoppedEarly: false});
+            expect(second).toMatchObject({batches: 0, total: 0, stoppedEarly: false});
+        });
+        expect(await count(db(REGION), "orders")).toBe(0);
+        expect(await count(dbArchive(REGION), "orders")).toBe(5);
+    });
+
+    it("stops early without moving anything once the runtime cap is spent", async () => {
+        // Arrange
+        await seedArchivableOrder();
+
+        // Act — a 0-minute cap means the deadline has already passed
+        const stats = await withArchivalConfig({maxRuntimeMin: 0}, () => archiveRegion(REGION));
+
+        // Assert
+        expect(stats).toMatchObject({batches: 0, total: 0, stoppedEarly: true});
+        expect(await count(db(REGION), "orders")).toBe(1);
         expect(await redisClient.exists(`archival:${REGION}:lock`)).toBe(0);
     });
 

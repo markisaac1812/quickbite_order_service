@@ -1,7 +1,7 @@
 import {Knex} from "knex";
 import {TransactionEntity} from "../entity/transaction.entity";
 import {TransactionType, TransactionMethod, TransactionStatus} from "../enums";
-import {CreateTransactionInput} from "../types";
+import {CreateTransactionInput, TransactionWithOwner} from "../types";
 
 export const TRANSACTION_COLUMNS = [
     "id",
@@ -102,12 +102,6 @@ export async function findTransactionById(id: number, conn: Knex): Promise<Trans
         .where({id})
         .first();
     return row ? toEntity(row) : undefined;
-}
-
-export interface TransactionWithOwner {
-    transaction: TransactionEntity;
-    /** The owning order's restaurant id (NULL for txs not tied to an order, e.g. payouts). */
-    restaurantId: number | null;
 }
 
 /**

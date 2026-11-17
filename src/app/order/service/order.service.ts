@@ -578,6 +578,7 @@ function buildOrderTransitionPayload(order: OrderEntity, reason: string | undefi
     return {
         orderId: order.publicId,
         region: order.region,
+        countryCode: order.countryCode,
         restaurantId: Number(order.restaurantId),
         branchId: Number(order.branchId),
         customerId: Number(order.customerId),

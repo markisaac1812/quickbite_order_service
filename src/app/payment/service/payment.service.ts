@@ -13,19 +13,13 @@ import {
     findActiveSessionByOrderId,
 } from "../repository/payment-session.repo";
 import {findTransactionWithRestaurant} from "../repository/transaction.repo";
-import {PaymentSessionEntity} from "../entity/payment-session.entity";
 import {PaymentSessionStatus, PaymentProviderName, PAYMENT_PROVIDER_IDS} from "../enums";
 import {PaymentInitResponseDTO, PaymentResponseDTO} from "../dto/payment.response.dto";
 import {
     PaymentNotFoundError,
     PaymentProviderUnavailableError,
 } from "../errors";
-
-interface InitOnlinePaymentResult {
-    session: PaymentSessionEntity;
-    expiresAt: string;
-    dto: PaymentInitResponseDTO;
-}
+import {InitOnlinePaymentResult} from "../types";
 
 @injectable()
 export class PaymentService {
