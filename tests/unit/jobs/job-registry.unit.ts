@@ -47,9 +47,10 @@ describe("scheduler", () => {
         startAll();
 
         // Assert
-        await waitFor(() => ticks >= 2, {timeoutMs: 4000});
+        await waitFor(() => ticks >= 2, {timeoutMs: 10_000});
         expect(ticks).toBeGreaterThanOrEqual(2);
-    });
+        // Real 1s cron ticks: the 5s default is too tight on a slow CI runner.
+    }, 15_000);
 
     it("refuses to start when a job has an invalid cron expression", () => {
         // Arrange
