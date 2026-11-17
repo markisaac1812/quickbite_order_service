@@ -18,7 +18,8 @@
     "migrate:rollback": "knex --knexfile src/lib/knex/knexfile.ts migrate:rollback",
     "migrate:status": "knex --knexfile src/lib/knex/knexfile.ts migrate:status",
     "migrate:make": "knex --knexfile src/lib/knex/knexfile.ts migrate:make",
-    "migrate:all": "tsx scripts/migrate-all.ts",
+    "migrate:all": "tsx src/scripts/migrate-all.ts",
+    "migrate:all:prod": "DB_MIGRATION_DIRECTORY=dist/migrations DB_MIGRATION_EXTENSION=js node dist/scripts/migrate-all.js",
     "partitions:create": "tsx scripts/create-partitions.ts",
     "archive:run": "tsx scripts/run-archival.ts"
   },

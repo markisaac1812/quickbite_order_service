@@ -32,9 +32,23 @@ play
 
 # Docker files themselves don't belong in the image
 Dockerfile
-renameto.dockerignore
+.dockerignore
 docker-compose.yml
+docker-compose.test.yml
 docker
+
+# CI, tests and local tooling never run inside the runtime image
+.github
+tests
+coverage
+jest.config.js
+jest.coverage.config.js
+jest.integration.config.js
+tsconfig.test.json
+.claude
+
+# System-wide seed + k6 scripts, run from outside the image
+loadtest
 
 # Local archives
 *.zip

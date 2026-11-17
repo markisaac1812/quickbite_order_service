@@ -20,6 +20,7 @@ module.exports = {
         "!src/migrations/**",        // DDL, executed by globalSetup (outside instrumentation)
         "!src/server.ts",            // process entrypoints: listen + signal handlers
         "!src/worker.ts",
+        "!src/scripts/**",           // CLI entrypoints (migrate:all), run outside the test process
         "!src/lib/knex/knexfile.ts", // knex CLI config, only read by `npm run migrate`
     ],
     coverageReporters: ["text-summary", "text", "html"],

@@ -12,6 +12,10 @@ function buildConfig(shard: ShardConfig): Knex.Config {
             user: shard.username,
             password: shard.password,
             database: shard.name,
+        // RDS requires TLS. Its certificate is signed by the AWS RDS CA, which is
+        // not in Node's trust store, so the chain is not verified (traffic stays
+        // encrypted inside the VPC).
+        ssl: env.db.ssl ? {rejectUnauthorized: false} : false,
         },
         pool: {
             min: 0,
