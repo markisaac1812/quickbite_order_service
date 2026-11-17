@@ -197,6 +197,7 @@ export class SettlementService {
                 payload: {
                     orderId: updated.publicId,
                     region: updated.region,
+                    countryCode: updated.countryCode,
                     restaurantId: Number(updated.restaurantId),
                     branchId: Number(updated.branchId),
                     customerId: Number(updated.customerId),
@@ -207,6 +208,9 @@ export class SettlementService {
                     commission,
                     currency: updated.currency,
                     paymentMethod: updated.paymentMethod,
+                    // placedAt lets analytics attribute delivery time to the order's
+                    // placed-day even when order.delivered arrives first.
+                    placedAt: updated.createdAt.toISOString(),
                     deliveredAt: updated.deliveredAt?.toISOString() ?? new Date().toISOString(),
                 },
             });
