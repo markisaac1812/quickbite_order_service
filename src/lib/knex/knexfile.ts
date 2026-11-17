@@ -29,6 +29,8 @@ const config: Knex.Config = {
         user: shard.username,
         password: shard.password,
         database: shard.name,
+        // RDS requires TLS (see lib/knex/shards.ts).
+        ssl: env.db.ssl ? {rejectUnauthorized: false} : false,
     },
     pool: {min: 0, max: env.db.poolMax},
     migrations: {

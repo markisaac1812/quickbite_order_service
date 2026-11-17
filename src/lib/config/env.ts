@@ -21,6 +21,9 @@ const baseSchema = z.object({
     DB_POOL_MAX: z.string().default("10"),
     DB_MIGRATION_DIRECTORY: z.string().default("src/migrations"),
     DB_MIGRATION_EXTENSION: z.string().default("ts"),
+    // TLS to every shard. Unset -> on in production (RDS), off elsewhere.
+    // Set "false" to talk to a plain local Postgres from the production image.
+    DB_SSL: z.enum(["true", "false"]).optional(),
 
     REDIS_HOST: z.string().default("localhost"),
     REDIS_PORT: z.string().default("6379"),
@@ -150,6 +153,7 @@ export const env = {
             parsed.DB_MIGRATION_DIRECTORY,
         ),
         migrationExtension: parsed.DB_MIGRATION_EXTENSION,
+        ssl: parsed.DB_SSL ? parsed.DB_SSL === "true" : parsed.NODE_ENV === "production",
     },
 
     regions,
