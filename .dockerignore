@@ -47,5 +47,8 @@ jest.integration.config.js
 tsconfig.test.json
 .claude
 
+# System-wide seed + k6 scripts, run from outside the image
+loadtest
+
 # Local archives
 *.zip
