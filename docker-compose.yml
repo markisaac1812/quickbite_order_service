@@ -1,3 +1,25 @@
+# =====================================================================
+# order-service local stack
+#   docker compose up -d --build   # migrate, then API + worker
+#   docker compose down            # stop (keeps data); add -v to wipe it
+# =====================================================================
+
+# Shared by migrate / API / worker: one image, three commands (same as ECS).
+x-order-app: &order-app
+  build: .
+  image: quickbite-order-service
+  env_file:
+    - .env
+  environment:
+    DB_eg_HOST: postgres
+    DB_ksa_HOST: postgres
+    ARCHIVE_DB_eg_HOST: postgres
+    ARCHIVE_DB_ksa_HOST: postgres
+    REDIS_HOST: redis
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    # Local Postgres has no TLS; production (RDS) leaves DB_SSL unset -> on.
+    DB_SSL: "false"
+
 services:
   postgres:
     image: postgres:16
@@ -11,6 +33,7 @@ services:
      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Creates the 2 hot + 2 archive databases on first boot.
       - ./scripts/docker/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -25,6 +48,7 @@ services:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       retries: 10
+
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     ports:
@@ -34,44 +58,39 @@ services:
       test: [ "CMD", "rabbitmq-diagnostics","-q","ping"]
       interval: 10s
       retries: 10
-  order-service:
-    build: .
-    env_file:
-      - .env
-    environment:
-      DB_eg_HOST: postgres
-      DB_ksa_HOST: postgres
-      ARCHIVE_DB_ksa_HOST: postgres
-      ARCHIVE_DB_eg_HOST: postgres
-      REDIS_HOST: redis
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-    ports:
-      - "4000:4000"
-    depends_on:
-     postgres:
-        condition: service_healthy
-     redis:
-      condition: service_healthy
-     rabbitmq:
-        condition: service_healthy
-  order-worker:
-    build: .
-    command: ["node","dist/worker.js"]
-    env_file:
-      - .env
-    environment:
-      DB_eg_HOST: postgres
-      DB_ksa_HOST: postgres
-      ARCHIVE_DB_ksa_HOST: postgres
-      ARCHIVE_DB_eg_HOST: postgres
-      REDIS_HOST: redis
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+
+  # One-shot: migrates every region (hot + archive), then exits.
+  # Same command the production migrate task runs (see .github/workflows/deploy.yml).
+  migrate:
+    <<: *order-app
+    command: ["npm", "run", "migrate:all:prod"]
     depends_on:
       postgres:
         condition: service_healthy
+
+  order-service:
+    <<: *order-app
+    ports:
+      - "4000:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+
+  # Background jobs (assignment, outbox drain, archival) — same image.
+  order-worker:
+    <<: *order-app
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   postgres-data:
