@@ -6,7 +6,7 @@ import {redisClient} from "../../../src/lib/cache/init";
 import {startTestServer} from "../../helpers/server";
 import {insertAgentEarning, insertOrder} from "../../helpers/factories";
 import {AGENT, authCookie, OTHER_AGENT} from "../../helpers/auth";
-import {BRANCH_ID} from "../../helpers/fixtures";
+import {BRANCH_ID, OWNER_ID} from "../../helpers/fixtures";
 import {TestServer} from "../../helpers/types";
 import type {JWTPayload} from "../../../src/lib/auth/jwt";
 
@@ -87,9 +87,23 @@ describe("agent deliveries (/api/agents/orders/:id/status, /tasks, /earnings)", 
         expect(await conn("restaurant_balances").select("restaurant_id", "currency", "balance")).toEqual([{restaurant_id: "10", currency: "EGP", balance: 13500}]);
         expect(await conn("agent_earnings").select("agent_id", "amount")).toEqual([{agent_id: "300", amount: 1600}]);
 
+        // Assert — the denormalised balance equals the owner's net ledger
+        // position (credits to the owner minus debits from the owner), so the
+        // two tables can't drift apart.
+        const {net} = await conn("transactions")
+            .where({order_id: order.id})
+            .first(conn.raw(
+                "COALESCE(SUM(amount) FILTER (WHERE dst_acc_id = ?), 0) - COALESCE(SUM(amount) FILTER (WHERE src_acc_id = ?), 0) AS net",
+                [OWNER_ID, OWNER_ID],
+            ));
+        expect(Number(net)).toBe(13500);
+
         const outbox = await conn("events_outbox").select("event_type", "payload");
         expect(outbox).toHaveLength(1);
-        expect(outbox[0]).toMatchObject({event_type: "order.delivered", payload: {commission: 1500, deliveryAgentId: 300}});
+        expect(outbox[0]).toMatchObject({
+            event_type: "order.delivered",
+            payload: {commission: 1500, deliveryAgentId: 300, countryCode: "EG", placedAt: order.created_at.toISOString()},
+        });
 
         // Assert — agent freed, claim lock dropped
         expect(await redisClient.sismember(`presence:busy:${REGION}`, "300")).toBe(0);
